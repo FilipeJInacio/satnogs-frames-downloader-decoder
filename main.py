@@ -1,6 +1,7 @@
 import argparse
 import requests
-from time import sleep
+import time
+import random
 import logging
 import os
 import json
@@ -11,53 +12,133 @@ from datetime import datetime, timedelta, timezone
 # File flush
 
 TELEMETRY_URL = "https://db.satnogs.org/api/telemetry/"
+TELEMETRY_RATE = 240/(60*60) # Satnogs API allows 240 requests per hour, so we can make 1 request every 15 seconds
 SATELLITE_URL = "https://db.satnogs.org/api/satellites/"
+SATELLITE_RATE = 1
+
+TELEMETRY_FREQUENCY = 1/TELEMETRY_RATE # Time to wait between requests
+SATELLITE_FREQUENCY = 1/SATELLITE_RATE
+
 HIGHEST_NORAD_ID = 99999 # This is an arbitrary number that is higher than the highest NORAD_ID in the database. We will loop through all possible NORAD_IDs until we reach this number.
-RATE = 240/(60*60) # Satnogs API allows 240 requests per hour
-FREQUENCY = 1/RATE # Time to wait between requests
 
 class SatnogsAPIHandler:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.headers = {"Authorization": f"Token {self.api_key}"}
         self.formatter = logging.Formatter(fmt='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        self.logger = logging.getLogger("SatnogsAPIHandler")
+
+
+    def make_directories(self):
+
+        self.DATA_DIR = "data"
+        self.LOGS_DIR = "logs"
+        self.CHECKPOINTS_DIR = "checkpoints"
+
+        directories = [
+            self.DATA_DIR + "/satellites", # JSON with API result for each satellite
+            self.DATA_DIR + "/frames", # JSONL with the frames for each satellite
+            self.DATA_DIR + "/telemetry", # csv with the decoded data for each satellite
+            self.LOGS_DIR + "/frames",
+            self.LOGS_DIR + "/telemetry",
+            self.CHECKPOINTS_DIR + "/frames",
+            self.CHECKPOINTS_DIR + "/telemetry"
+        ]
+
+        for directory in directories:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+
+    def setup_logger(self, log_file):
+        handler = logging.FileHandler(log_file, mode='a')
+        handler.setFormatter(self.formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
+        return handler
+
+    def remove_logger(self, handler):
+        handler.close()
+        self.logger.removeHandler(handler)
+
+    def make_request(self, url, params=None, max_retries=8, timeout=30):
+
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, headers=self.headers, params=params, timeout=timeout)
+
+                if resp.status_code == 429: # Handle rate limiting
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = int(retry_after) if retry_after else (2 ** attempt)
+                    self.logger.warning(f"Rate limited. Waiting {wait}s before retry.")
+                    time.sleep(wait)
+                    continue
+
+                if 500 <= resp.status_code < 600: # Retry on server errors
+                    if attempt == max_retries - 1:
+                        self.logger.error(f"Server error {resp.status_code}. No more retries left.")
+                        raise requests.exceptions.HTTPError(f"Server error {resp.status_code}")
+                    else:
+                        wait = 2 ** attempt
+                        self.logger.warning(f"Server error {resp.status_code}. Retrying in {wait}s.")
+                        time.sleep(wait)
+                        continue
+
+                # Raise for other bad responses
+                resp.raise_for_status()
+
+                return resp.json()
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as e:
+
+                if attempt == max_retries - 1:
+                    self.logger.error(f"Request failed after {max_retries} attempts: {e}")
+                    raise
+
+                # Exponential backoff with jitter
+                backoff = (2 ** attempt) + random.uniform(0, 1)
+                self.logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. "f"Retrying in {backoff:.2f}s")
+                time.sleep(backoff)
+
 
     def test_api_connection(self):
+        
+        handler = self.setup_logger('logs/api_test.log')
+
         flag = True
         # Test with BugSat-1, which has NORAD_ID 40014
-        response = self.get_satellite(40014)
+        response = self.make_request(SATELLITE_URL, params={"norad_cat_id": 40014, "format": "json"})
 
         if len(response) != 1:
-            print(f"Expected 1 satellite, but got {len(response)}")
+            self.logger.error(f"Expected 1 satellite, but got {len(response)}")
             flag = False
         
         satellite_info = response[0]
         expected_fields = ["sat_id", "norad_cat_id", "name", "status", "decayed", "launched", "telemetries"]
         for field in expected_fields:
             if field not in satellite_info:
-                print(f"Field {field} is missing in the response")
+                self.logger.error(f"Field {field} is missing in the response")
                 flag = False
 
         # Test if we can obtain the lastest telemetry for BugSat-1
-        response = self.get_telemetry(40014)
+        response = self.make_request(TELEMETRY_URL, params={"satellite": 40014, "format": "json"})
 
         # Expected to receive a list dictionary with 3 fields: next, previous and results
         expected_fields = ["next", "previous", "results"]
         for field in expected_fields:
             if field not in response:
-                print(f"Field {field} is missing in the telemetry response")
+                self.logger.error(f"Field {field} is missing in the telemetry response")
                 flag = False
 
         data = response.get("results", [])
 
         # Results should have a list of 25 points
         if data is None:
-            print("Results field is missing in the telemetry response")
+            self.logger.error("Results field is missing in the telemetry response")
             flag = False
 
         if isinstance(data, list):
             if len(data) != 25:
-                print(f"Expected 25 telemetry points, but got {len(data)}")
+                self.logger.error(f"Expected 25 telemetry points, but got {len(data)}")
                 flag = False
 
             # Each telemetry point should have the following fields: sat_id, norad_cat_id, timestamp, frame, observer
@@ -65,85 +146,65 @@ class SatnogsAPIHandler:
             for point in data:
                 for field in expected_fields:
                     if field not in point:
-                        print(f"Field {field} is missing in telemetry point: {point}")
+                        self.logger.error(f"Field {field} is missing in telemetry point: {point}")
                         flag = False
     
         if flag:
-            print("API connection test completed successfully.")
+            self.logger.info("API connection test completed successfully.")
         else:
-            print("API connection test failed. Please check the issues above.")
+            self.logger.error("API connection test failed. Please check the issues above.")
+
+        self.remove_logger(handler)
 
     def get_satellite(self, norad_id: int):
-        params = {"norad_cat_id": norad_id, "format": "json"}
-        resp = requests.get(SATELLITE_URL, headers=self.headers, params=params)
-        resp.raise_for_status()
-        return resp.json()
-    
-    def get_telemetry(self, norad_id: int):
-        params = {"satellite": norad_id, "format": "json"}
-        resp = requests.get(TELEMETRY_URL, headers=self.headers, params=params)
-        resp.raise_for_status()
-        return resp.json()
+        data = self.make_request(SATELLITE_URL, params={"norad_cat_id": norad_id, "format": "json"})
+
+        if data: # If the response is not empty, it means that the satellite exists
+            self.logger.info(f"Found satellite with NORAD_ID {norad_id}")
+            with open(f"{self.DATA_DIR}/satellites/{norad_id}.json", "w") as f:
+                json.dump(data[0], f)
+        else:
+            self.logger.info(f"No satellite found with NORAD_ID {norad_id}")
 
     def get_all_satellites(self):
-        # Gets the JSON information of all satellites in the Satnogs database and saves it in data/satellites/{norad_id}.json. The NORAD_IDs of the satellites are obtained from the logs/satellites.log file, which is created during the execution of this function. If the program is interrupted, we can check the logs to see where it left off and resume from there.
+        #! The API doesn't have a way to get all available NORAD_IDs, so we have to loop through all possible IDs and check if they exist.
+        # If the program is interrupted, we can check the logs to see where it left off and resume from there.
 
-        # See the last log message from logs/satellites.log to get the last NORAD_ID that was processed
+        # Checkpoint logic
         last_norad_id = 0
-        if os.path.exists("logs/satellites.log"):
-            with open("logs/satellites.log", "r") as f:
-                lines = f.readlines()
-                if lines:
-                    last_line = lines[-1]
-                    if "NORAD_ID" in last_line:
-                        last_norad_id = int(last_line.split("NORAD_ID")[1].strip())
-                        print(f"Resuming from NORAD_ID {last_norad_id + 1}")
-                    else:
-                        print("No NORAD_ID found in the last log message. Starting from the beginning.")
-                else:
-                    print("Log file is empty. Starting from the beginning.")
-        
-        if last_norad_id >= HIGHEST_NORAD_ID:
-            print(f"All NORAD_IDs up to {HIGHEST_NORAD_ID} have been processed. No more satellites to check.")
-            return
+        if os.path.exists(f"{self.CHECKPOINTS_DIR}/satellites.json"):
+            with open(f"{self.CHECKPOINTS_DIR}/satellites.json", "r") as f:
+                state = json.load(f)
 
-        logger = logging.getLogger()
-        # if it doesn't exist, create a log file in logs/satellites.log
-        if not os.path.exists("logs/satellites.log"):
-            handler = logging.FileHandler('logs/satellites.log', mode='w')
+            finished = state.get("finished", False) # Are we in the middle of a download?
+            if finished:
+                # Means that we downloaded all satellite, so, re:do the download again.
+                last_norad_id = 0
+                with open(f"{self.CHECKPOINTS_DIR}/satellites.json", "w") as f:
+                    json.dump({"finished": False, "last_norad_id": 0}, f)
+                print("All satellite data has already been downloaded previously. Updating all information.")
+                time.sleep(10) # Sleep for 10 seconds to give the user time to read the message and cancel if they want to.
+            else:
+                last_norad_id = state.get("last_norad_id", 0)
+                print(f"Resuming from NORAD_ID {last_norad_id + 1}")
         else:
-            handler = logging.FileHandler('logs/satellites.log', mode='a')
+            with open(f"{self.CHECKPOINTS_DIR}/satellites.json", "w") as f:
+                json.dump({"finished": False, "last_norad_id": 0}, f)
 
-        handler.setFormatter(self.formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        handler = self.setup_logger('logs/satellites.log')
 
-        # because Satnogs API doesn't have a way to get all available NORAD_IDs, we have to loop through all possible IDs
-        #! This loop believes that no new NORAD_ID will be added in a range that was once fully processed. 
-        #! For example, if we process all NORAD_IDs from 1 to 100000, we assume that no new NORAD_ID will be added in this range in the future. 
         for norad_id in range(last_norad_id + 1, HIGHEST_NORAD_ID + 1):
-            print(f"Processing NORAD_ID {norad_id}...")
-            try:
-                response = self.get_satellite(norad_id)
-                if response: # If the response is not empty, it means that the satellite exists
-                    logging.info(f"Found satellite with NORAD_ID {norad_id}")
-                    # Save the response in a json file in data/satellites/{norad_id}.json
-                    with open(f"data/satellites/{norad_id}.json", "w") as f:
-                        json.dump(response[0], f)
-                else:
-                    logging.info(f"No satellite found with NORAD_ID {norad_id}")
-            except requests.HTTPError as e:
-                if e.response.status_code == 404:
-                    logging.info(f"No satellite found with NORAD_ID {norad_id}")
-                else:
-                    logging.error(f"HTTP error occurred: {e} for NORAD_ID {norad_id}")
-            except Exception as e:
-                logging.error(f"An error occurred: {e} for NORAD_ID {norad_id}")
+            self.get_satellite(norad_id)
             
-            sleep(1) # Be kind to the API # 1 seconds because many will miss
+            with open(f"{self.CHECKPOINTS_DIR}/satellites.json", "w") as f: # Update checkpoint
+                json.dump({"finished": False, "last_norad_id": norad_id}, f)
 
-        handler.close()
-        logger.removeHandler(handler)
+            time.sleep(SATELLITE_FREQUENCY) # Be kind to the API
+
+        with open(f"{self.CHECKPOINTS_DIR}/satellites.json", "w") as f:
+            json.dump({"finished": True, "last_norad_id": HIGHEST_NORAD_ID}, f)
+
+        self.remove_logger(handler)
 
     def get_all_satellites_info(self):
         # Function that assumes that logs/satellites.log has all the NORAD_IDs of the satellites that we want to get info for.
@@ -364,53 +425,69 @@ class SatnogsAPIHandler:
 if __name__ == "__main__":
     
     # API Key Input
-    parser = argparse.ArgumentParser(description="Download satellite telemetry data from Satnogs API.")
+    parser = argparse.ArgumentParser(description="Download & Decode satellite telemetry data from Satnogs API.")
     parser.add_argument("--api_key", type=str, required=True, help="Satnogs API key. You can get it from https://db.satnogs.org/profile/ after creating an account.")
+    subparsers = parser.add_subparsers(dest="mode", required=True, help="Operation mode")
+
+    subparsers.add_parser("test-api", help="Test API connectivity")
+    subparsers.add_parser("run-all", help="Run full pipeline")
+    subparsers.add_parser("download-all-satellites", help="Download all satellites")
+    download_sat = subparsers.add_parser("download-satellite", help="Download specific satellite")
+    download_sat.add_argument("--norad", required=True, type=int, help="NORAD ID of satellite")
+    subparsers.add_parser("download-all-frames", help="Download all frames")
+    download_frames = subparsers.add_parser("download-frames",help="Download frames for specific satellite")
+    download_frames.add_argument("--norad", required=True, type=int, help="NORAD ID of satellite")
+    subparsers.add_parser("decode-all-frames", help="Decode all frames")
+    decode_frame = subparsers.add_parser("decode-frame", help="Decode frames for specific satellite")
+    decode_frame.add_argument("--norad", required=True, type=int, help="NORAD ID of satellite")
+
     args = parser.parse_args()
 
-    if not args.api_key:
-        print("API key is required. Please provide it using the --api_key argument.")
-        exit(1)
-    
     handler = SatnogsAPIHandler(args.api_key)
+    handler.make_directories()
 
-    # Verify if the functions work correctly (basically, check if the code is outdated)
-    # handler.test_api_connection()
+    # ---- Mode Handling ----
+    if args.mode == "test-api":
+        print("Testing API with key:", args.api_key)
+        # Verify if the code connects to the API correctly (basically, check if the code is outdated)
+        handler.test_api_connection()
 
-    # Create a data folder if it doesn't exist
-    if not os.path.exists("data"):
-        os.makedirs("data") # This is where all data will be stored
+    elif args.mode == "run-all":
+        pass
 
-    if not os.path.exists("data/satellites"):
-        os.makedirs("data/satellites") # This is where the information of each satellite will be stored in a json file named {norad_id}.json
+    elif args.mode == "download-all-satellites":
+        handler.get_all_satellites()
 
-    if not os.path.exists("data/telemetry"):
-        os.makedirs("data/telemetry") # This is where the telemetry data for each satellite will be stored in json files named {norad_id}.jsonl
+    elif args.mode == "download-satellite":
+        h = handler.setup_logger('logs/satellites.log')
+        handler.get_satellite(args.norad)
+        handler.remove_logger(h)
+        
+    elif args.mode == "download-all-frames":
+        pass
+
+    elif args.mode == "download-frames":
+        pass
+
+    elif args.mode == "decode-all-frames":
+        pass
+
+    elif args.mode == "decode-frame":
+        pass
+    
 
 
-    # Create a logs folder if it doesn't exist
-    if not os.path.exists("logs"):
-        os.makedirs("logs") # This is where the progress of download will be stored. If the program is interrupted, we can check the logs to see where it left off and resume from there.
-
-    if not os.path.exists("logs/telemetry"):
-        os.makedirs("logs/telemetry") # This is where the logs for telemetry download will be stored in files named {norad_id}.log
 
 
-    if not os.path.exists("checkpoints"):
-        os.makedirs("checkpoints")
-
-    if not os.path.exists("checkpoints/telemetry"):
-        os.makedirs("checkpoints/telemetry")
-
-    handler.get_all_satellites()
+    
 
     # Get all NORAD_IDs of the satellites in Satnogs that we found from logs/satellites.log
     #norad_ids = handler.get_norad_ids_from_log()
 
     # Get all NORAD_IDs of the satellites that have a functioning decoder
-    norad_ids = list(handler.get_norad_ids_with_decoders_from_log())
+    # norad_ids = list(handler.get_norad_ids_with_decoders_from_log())
 
     # For each NORAD_ID, get all telemetry data (if all data is already downloaded, just verify if there is any new telemetry data and download it)
-    for i, norad_id in enumerate(norad_ids):
-        print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
-        handler.get_all_telemetry(norad_id)
+    # for i, norad_id in enumerate(norad_ids):
+    #     print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
+    #     handler.get_all_telemetry(norad_id)
