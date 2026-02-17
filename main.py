@@ -6,6 +6,7 @@ import logging
 import os
 import json
 from datetime import datetime, timedelta, timezone
+import signal
 
 # TODO:
 # FIle Paths
@@ -33,8 +34,8 @@ def save_json(path, state):
     with open(path, "w") as f:
         json.dump(state, f, indent=4)
 
-    f.flush()
-    os.fsync(f.fileno())
+        f.flush()
+        os.fsync(f.fileno())
 
 def save_jsonl(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -43,8 +44,8 @@ def save_jsonl(path, data):
         for item in data:
             f.write(json.dumps(item) + "\n")
 
-    f.flush()
-    os.fsync(f.fileno())
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def build_request(cursor, start_time, end_time, norad_id):
@@ -69,6 +70,12 @@ class SatnogsAPIHandler:
         self.formatter = logging.Formatter(fmt='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         self.logger = logging.getLogger("SatnogsAPIHandler")
 
+        self.stop_requested = False
+        signal.signal(signal.SIGINT, self._handle_sigint)
+
+    def _handle_sigint(self, signum, frame):
+        self.stop_requested = True
+        print("SIGINT received. Stopping gracefully... Please wait for the current operation to finish.")
 
     def make_directories(self):
 
@@ -226,6 +233,8 @@ class SatnogsAPIHandler:
             self.get_satellite(norad_id)
             save_json(f"{self.CHECKPOINTS_DIR}/satellites.json", {"finished": False, "last_norad_id": norad_id}) 
             time.sleep(SATELLITE_FREQUENCY) # Be kind to the API
+            if self.stop_requested: # For Ctl + C handling
+                return
 
         save_json(f"{self.CHECKPOINTS_DIR}/satellites.json", {"finished": True, "last_norad_id": HIGHEST_NORAD_ID})
         self.remove_logger(handler)
@@ -277,7 +286,8 @@ class SatnogsAPIHandler:
             url, params = build_request(cursor, start_time, end_time, norad_id)
 
             data = self.make_request(url, params=params)
-            time.sleep(TELEMETRY_FREQUENCY) # It is here because if the first download is empty, it will break the loop and we don't want to make too many requests in a short period of time.
+            # It is here because if the first download is empty, it will break the loop and we don't want to make too many requests in a short period of time.
+            time.sleep(TELEMETRY_FREQUENCY)
 
             results = data.get("results", [])
             next_cursor = data.get("next")
@@ -298,6 +308,9 @@ class SatnogsAPIHandler:
 
             if not next_cursor: # No more pages to download
                 break
+
+            if self.stop_requested: # For Ctl + C handling
+                return
 
             cursor = next_cursor
 
@@ -358,7 +371,7 @@ if __name__ == "__main__":
         handler.remove_logger(h)
 
     elif args.mode == "download-all-frames":
-        norad_ids = handler.get_decodable_norad_ids()
+        norad_ids = list(handler.get_decodable_norad_ids())
         for i, norad_id in enumerate(norad_ids):
             print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
             handler.get_frames(norad_id)
