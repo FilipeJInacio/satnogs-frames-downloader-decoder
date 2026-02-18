@@ -16,13 +16,6 @@ The code is designed for long-running downloads, robustness against interruption
 1. Install the latest SatNOGS Decoders.
 Visit SatNOGS Decoders on GitLab (https://gitlab.com/librespacefoundation/satnogs/satnogs-decoders), download the `satnogsdecoders` folder and place it in the same directory as `main.py`.
 
-Alternatively, you can run:
-```
-pip install satnogsdecoders
-```
-
-However, the pip package is usually very outdated.
-
 2. Install the required Python packages. Python 3.8 or higher is recommended.
 ```
 pip install -r requirements.txt
