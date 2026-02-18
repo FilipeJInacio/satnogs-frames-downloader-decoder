@@ -1,4 +1,5 @@
 data/*
 logs/*
 checkpoints/*
+satnogsdecoders/*
 API.txt

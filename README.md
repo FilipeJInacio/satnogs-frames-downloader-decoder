@@ -11,6 +11,25 @@ The code is designed for long-running downloads, robustness against interruption
 
 ---
 
+## Requirements
+
+1. Install the latest SatNOGS Decoders.
+Visit SatNOGS Decoders on GitLab (https://gitlab.com/librespacefoundation/satnogs/satnogs-decoders), download the `satnogsdecoders` folder and place it in the same directory as `main.py`.
+
+Alternatively, you can run:
+```
+pip install satnogsdecoders
+```
+
+However, the pip package is usually very outdated.
+
+2. Install the required Python packages. Python 3.8 or higher is recommended.
+```
+pip install -r requirements.txt
+```
+
+---
+
 ## Usage
 
 ```
@@ -61,20 +80,6 @@ Example:
 Decode all frames from Bugsat-1 (40014)
 ```
 python main.py --api_key 0000000000000000000000000000000000000000 decode-frames --norad 40014
-```
-
----
-
-## Requirements
-
-```
-pip install -r requirements.txt
-```
-
-or build the dockers
-
-```
-to do
 ```
 
 ---

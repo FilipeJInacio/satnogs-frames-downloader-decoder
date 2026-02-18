@@ -1,0 +1,3 @@
+requests
+kaitaistruct==0.10
+versioneer==0.28
