@@ -18,34 +18,61 @@ python main.py --api_key YOUR_API_KEY <mode> [options]
 ```
 
 1. Verifies that the API key is valid and that the endpoints respond correctly.
+```
 python main.py --api_key YOUR_API_KEY test-api
+```
 
 2. Downloads satellite metadata, retrieves telemetry frames for all decodable satellites and decodes them.
+```
 python main.py --api_key YOUR_API_KEY run-all 
+```
 
 3. Downloads metadata for all possible NORAD IDs.
+```
 python main.py --api_key YOUR_API_KEY download-all-satellites
+```
 
 4. Download metadata for a specific satellite
+```
 python main.py --api_key YOUR_API_KEY download-satellite --norad NORAD
+```
 
 5. Download frames for all decodable satellites
+```
 python main.py --api_key YOUR_API_KEY download-frames-all-satellites
+```
 
 6. Download frames for one satellite
+```
 python main.py --api_key YOUR_API_KEY download-frames --norad NORAD
+```
 
-7. Decode frames for all satellites 
+7. Decode frames for all satellites
+```
 python main.py --api_key YOUR_API_KEY decode-frames-all-satellites
+```
 
 8. Decode frames for one satellite
+```
 python main.py --api_key YOUR_API_KEY decode-frames --norad NORAD
+```
 
 Example:
 Decode all frames from Bugsat-1 (40014)
+```
 python main.py --api_key 0000000000000000000000000000000000000000 decode-frames --norad 40014
+```
 
 ---
 
 ## Requirements
 
+```
+pip install -r requirements.txt
+```
+
+or build the dockers
+
+```
+to do
+```
