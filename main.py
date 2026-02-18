@@ -17,7 +17,7 @@ SATELLITE_RATE = 1
 TELEMETRY_FREQUENCY = 1/TELEMETRY_RATE # Time to wait between requests
 SATELLITE_FREQUENCY = 1/SATELLITE_RATE
 
-HIGHEST_NORAD_ID = 99999 # This is an arbitrary number that is higher than the highest NORAD_ID in the database. We will loop through all possible NORAD_IDs until we reach this number.
+HIGHEST_NORAD_ID = 99999 # highest NORAD ID
 
 DATA_DIR = "data"
 LOGS_DIR = "logs"
@@ -412,7 +412,12 @@ if __name__ == "__main__":
         handler.test_api_connection()
 
     elif args.mode == "run-all":
-        pass
+        handler.get_all_satellites()
+        norad_ids = list(handler.get_decodable_norad_ids())
+        for i, norad_id in enumerate(norad_ids):
+            print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
+            handler.get_frames(norad_id)
+            handler.decode_frames(norad_id)
 
     elif args.mode == "download-all-satellites":
         print("Downloading all satellites...")
