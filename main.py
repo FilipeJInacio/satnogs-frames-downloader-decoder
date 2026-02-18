@@ -7,10 +7,7 @@ import os
 import json
 from datetime import datetime, timedelta, timezone
 import signal
-
-# TODO:
-# FIle Paths
-# File flush
+from satnogsdecoders.decode_frame import decode_frame_to_dict
 
 TELEMETRY_URL = "https://db.satnogs.org/api/telemetry/"
 TELEMETRY_RATE = 240/(60*60) # Satnogs API allows 240 requests per hour, so we can make 1 request every 15 seconds
@@ -21,6 +18,11 @@ TELEMETRY_FREQUENCY = 1/TELEMETRY_RATE # Time to wait between requests
 SATELLITE_FREQUENCY = 1/SATELLITE_RATE
 
 HIGHEST_NORAD_ID = 99999 # This is an arbitrary number that is higher than the highest NORAD_ID in the database. We will loop through all possible NORAD_IDs until we reach this number.
+
+DATA_DIR = "data"
+LOGS_DIR = "logs"
+CHECKPOINTS_DIR = "checkpoints"
+
 
 def load_json(path):
     if os.path.exists(path):
@@ -63,6 +65,21 @@ def is_valid_NORAD_ID(norad_id):
     #! This is a very basic check, but it can help us avoid making unnecessary requests to the API/.json's.
     return isinstance(norad_id, int) and norad_id > 0 and norad_id <= HIGHEST_NORAD_ID
 
+def load_frames(norad_id):
+    frames = []
+    with open(f"{DATA_DIR}/frames/{norad_id}.jsonl", "r") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        data = json.loads(line.strip())
+        bindata = bytes.fromhex(data["frame"])
+        frames.append(bindata)
+
+    return frames
+
+
+
+
 class SatnogsAPIHandler:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -78,19 +95,14 @@ class SatnogsAPIHandler:
         print("SIGINT received. Stopping gracefully... Please wait for the current operation to finish.")
 
     def make_directories(self):
-
-        self.DATA_DIR = "data"
-        self.LOGS_DIR = "logs"
-        self.CHECKPOINTS_DIR = "checkpoints"
-
         directories = [
-            self.DATA_DIR + "/satellites", # JSON with API result for each satellite
-            self.DATA_DIR + "/frames", # JSONL with the frames for each satellite
-            self.DATA_DIR + "/telemetry", # csv with the decoded data for each satellite
-            self.LOGS_DIR + "/frames",
-            self.LOGS_DIR + "/telemetry",
-            self.CHECKPOINTS_DIR + "/frames",
-            self.CHECKPOINTS_DIR + "/telemetry"
+            DATA_DIR + "/satellites", # JSON with API result for each satellite
+            DATA_DIR + "/frames", # JSONL with the frames for each satellite
+            DATA_DIR + "/telemetry", # csv with the decoded data for each satellite
+            LOGS_DIR + "/frames",
+            LOGS_DIR + "/telemetry",
+            CHECKPOINTS_DIR + "/frames",
+            CHECKPOINTS_DIR + "/telemetry"
         ]
 
         for directory in directories:
@@ -150,7 +162,7 @@ class SatnogsAPIHandler:
 
     def test_api_connection(self):
         
-        handler = self.setup_logger(f'{self.LOGS_DIR}/api_test.log')
+        handler = self.setup_logger(f'{LOGS_DIR}/api_test.log')
 
         flag = True
         # Test with BugSat-1, which has NORAD_ID 40014
@@ -210,7 +222,7 @@ class SatnogsAPIHandler:
 
         if data: # If the response is not empty, it means that the satellite exists
             self.logger.info(f"Found satellite with NORAD_ID {norad_id}")
-            save_json(f"{self.DATA_DIR}/satellites/{norad_id}.json", data[0])
+            save_json(f"{DATA_DIR}/satellites/{norad_id}.json", data[0])
         else:
             self.logger.info(f"No satellite found with NORAD_ID {norad_id}")
 
@@ -218,7 +230,7 @@ class SatnogsAPIHandler:
         #! The API doesn't have a way to get all available NORAD_IDs, so we have to loop through all possible IDs and check if they exist.
         # If the program is interrupted, we can check the logs to see where it left off and resume from there.
 
-        state = load_json(f"{self.CHECKPOINTS_DIR}/satellites.json")
+        state = load_json(f"{CHECKPOINTS_DIR}/satellites.json")
         finished = state.get("finished", False) 
         last_norad_id = state.get("last_norad_id", 0)
         if finished: # Are we in the middle of a download?
@@ -227,21 +239,21 @@ class SatnogsAPIHandler:
         else:
             print(f"Resuming from NORAD_ID {last_norad_id + 1}")
 
-        handler = self.setup_logger(f'{self.LOGS_DIR}/satellites.log')
+        handler = self.setup_logger(f'{LOGS_DIR}/satellites.log')
 
         for norad_id in range(last_norad_id + 1, HIGHEST_NORAD_ID + 1):
             self.get_satellite(norad_id)
-            save_json(f"{self.CHECKPOINTS_DIR}/satellites.json", {"finished": False, "last_norad_id": norad_id}) 
+            save_json(f"{CHECKPOINTS_DIR}/satellites.json", {"finished": False, "last_norad_id": norad_id}) 
             time.sleep(SATELLITE_FREQUENCY) # Be kind to the API
             if self.stop_requested: # For Ctl + C handling
                 return
 
-        save_json(f"{self.CHECKPOINTS_DIR}/satellites.json", {"finished": True, "last_norad_id": HIGHEST_NORAD_ID})
+        save_json(f"{CHECKPOINTS_DIR}/satellites.json", {"finished": True, "last_norad_id": HIGHEST_NORAD_ID})
         self.remove_logger(handler)
 
     def get_norad_ids_from_files(self):
         norad_ids = []
-        for filename in os.listdir(f"{self.DATA_DIR}/satellites"): # Get all NORAD_IDs of the satellites in the data/satellites directory
+        for filename in os.listdir(f"{DATA_DIR}/satellites"): # Get all NORAD_IDs of the satellites in the data/satellites directory
             if filename.endswith(".json"):
                 norad_id = int(filename.split(".json")[0])
                 norad_ids.append(norad_id)
@@ -251,7 +263,7 @@ class SatnogsAPIHandler:
         norad_ids = self.get_norad_ids_from_files()
 
         for norad_id in norad_ids:
-            state = load_json(f"{self.DATA_DIR}/satellites/{norad_id}.json")
+            state = load_json(f"{DATA_DIR}/satellites/{norad_id}.json")
             if len(state.get("telemetries", [])) > 0: # Has at least one decoder
                 yield norad_id
 
@@ -262,7 +274,7 @@ class SatnogsAPIHandler:
         #! Why? Because, the API works via pagination, that means, even if we take 1 month downloading the data, we know that we can download all data since "start_time".
         #! After finishing the download, we will update the "start_time" to be the current time and download until "start_time".
 
-        state = load_json(f"{self.CHECKPOINTS_DIR}/frames/{norad_id}.json")
+        state = load_json(f"{CHECKPOINTS_DIR}/frames/{norad_id}.json")
         start_time = state.get("start_time", datetime.now(timezone.utc).isoformat())
         end_time = state.get("end_time", None) # Could be None if we haven't finished a complete download before else a timestamp
         cursor = state.get("cursor", None)
@@ -278,7 +290,7 @@ class SatnogsAPIHandler:
 
         state = {"start_time": start_time, "end_time": end_time, "cursor": cursor, "finished": False}
 
-        handler = self.setup_logger(f'{self.LOGS_DIR}/frames/{norad_id}.log')
+        handler = self.setup_logger(f'{LOGS_DIR}/frames/{norad_id}.log')
 
         # Download Loop
         while True:
@@ -296,7 +308,7 @@ class SatnogsAPIHandler:
                 self.logger.info("No more results returned.")
                 break
 
-            save_jsonl(f"{self.DATA_DIR}/frames/{norad_id}.jsonl", results)
+            save_jsonl(f"{DATA_DIR}/frames/{norad_id}.jsonl", results)
 
             self.logger.info(f"Downloaded {len(results)} frames. Next cursor: {next_cursor}")
 
@@ -304,7 +316,7 @@ class SatnogsAPIHandler:
             state["cursor"] = next_cursor
             state["finished"] = False
             
-            save_json(f"{self.CHECKPOINTS_DIR}/frames/{norad_id}.json", state)
+            save_json(f"{CHECKPOINTS_DIR}/frames/{norad_id}.json", state)
 
             if not next_cursor: # No more pages to download
                 break
@@ -318,10 +330,53 @@ class SatnogsAPIHandler:
         state["finished"] = True
         state["cursor"] = None
 
-        save_json(f"{self.CHECKPOINTS_DIR}/frames/{norad_id}.json", state)
+        save_json(f"{CHECKPOINTS_DIR}/frames/{norad_id}.json", state)
         self.logger.info(f"Finished downloading telemetry data up to timestamp {start_time}")
         self.remove_logger(handler)
         
+
+    def decode_frames(self, norad_id: int):
+        # Load decoder name
+        satellite_info = load_json(f"{DATA_DIR}/satellites/{norad_id}.json")
+        decoders = satellite_info.get("telemetries", [])
+        if len(decoders) > 0:
+            decoder_name = decoders[0].get("decoder", "Unknown Decoder")
+            self.logger.info(f"Found decoder {decoder_name} for satellite {norad_id}")
+            if decoder_name == "Unknown Decoder":
+                self.logger.error(f"Decoder name is unknown for satellite {norad_id}.")
+        else:
+            self.logger.error(f"No decoders found for satellite {norad_id}")
+            return
+
+        # Load the frames
+        frames = load_frames(norad_id)
+
+        # Checkpoint
+        state = load_json(f"{CHECKPOINTS_DIR}/telemetry/{norad_id}.json")
+        last_decoded_index = state.get("last_decoded_index", -1)
+
+        # Logger
+        handler = self.setup_logger(f'{LOGS_DIR}/telemetry/{norad_id}.log')
+
+        for i in range(last_decoded_index + 1, len(frames)):
+            frame = frames[i]
+            try:
+                decoded = decode_frame_to_dict(decoder_name, frame)
+                save_jsonl(f"{DATA_DIR}/telemetry/{norad_id}.jsonl", [decoded])
+                self.logger.info(f"Decoded frame {i+1}/{len(frames)}")
+            except Exception as e:
+                self.logger.error(f"Error decoding frame {i+1}: {e}")
+
+            state["last_decoded_index"] = i
+            save_json(f"{CHECKPOINTS_DIR}/telemetry/{norad_id}.json", state)
+
+            if self.stop_requested: # For Ctl + C handling
+                return
+
+        self.logger.info(f"Finished decoding telemetry data for satellite {norad_id}")
+        self.remove_logger(handler)
+
+
 
 
 
@@ -360,17 +415,20 @@ if __name__ == "__main__":
         pass
 
     elif args.mode == "download-all-satellites":
+        print("Downloading all satellites...")
         handler.get_all_satellites()
 
     elif args.mode == "download-satellite":
         if not is_valid_NORAD_ID(args.norad):
             print(f"Invalid NORAD ID: {args.norad}")
             exit(1)
+        print(f"Downloading satellite with NORAD ID {args.norad}...")
         h = handler.setup_logger(f'{handler.LOGS_DIR}/satellites.log')
         handler.get_satellite(args.norad)
         handler.remove_logger(h)
 
     elif args.mode == "download-all-frames":
+        print("Downloading frames for all satellites...")
         norad_ids = list(handler.get_decodable_norad_ids())
         for i, norad_id in enumerate(norad_ids):
             print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
@@ -380,14 +438,21 @@ if __name__ == "__main__":
         if not is_valid_NORAD_ID(args.norad):
             print(f"Invalid NORAD ID: {args.norad}")
             exit(1)
+        print(f"Downloading frames for satellite with NORAD ID {args.norad}...")
         handler.get_frames(args.norad)
 
     elif args.mode == "decode-all-frames":
-        pass
+        print("Decoding frames for all satellites...")
+        norad_ids = list(handler.get_decodable_norad_ids())
+        for i, norad_id in enumerate(norad_ids):
+            print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
+            handler.decode_frames(norad_id)
+
 
     elif args.mode == "decode-frame":
         if not is_valid_NORAD_ID(args.norad):
             print(f"Invalid NORAD ID: {args.norad}")
             exit(1)
-        pass
+        print(f"Decoding frames for satellite with NORAD ID {args.norad}...")
+        handler.decode_frames(args.norad)
     
