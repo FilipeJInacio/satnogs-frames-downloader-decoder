@@ -76,3 +76,13 @@ or build the dockers
 ```
 to do
 ```
+
+---
+
+## API Key
+
+You must create an account at:
+
+https://db.satnogs.org/
+
+Then obtain an API key from your profile page.
