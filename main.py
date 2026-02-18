@@ -262,11 +262,13 @@ class SatnogsAPIHandler:
     def get_decodable_norad_ids(self):
         norad_ids = self.get_norad_ids_from_files()
 
+        decodable_norad_ids = []
         for norad_id in norad_ids:
             state = load_json(f"{DATA_DIR}/satellites/{norad_id}.json")
             if len(state.get("telemetries", [])) > 0: # Has at least one decoder
-                yield norad_id
+                decodable_norad_ids.append(norad_id)
 
+        return decodable_norad_ids
 
     def get_frames(self, norad_id: int):
         #! Satnogs works by providing the newest telemetry data first. No sorting options are available.
@@ -393,11 +395,11 @@ if __name__ == "__main__":
     subparsers.add_parser("download-all-satellites", help="Download all satellites")
     download_sat = subparsers.add_parser("download-satellite", help="Download specific satellite")
     download_sat.add_argument("--norad", required=True, type=int, help="NORAD ID of satellite")
-    subparsers.add_parser("download-all-frames", help="Download all frames")
+    subparsers.add_parser("download-frames-all-satellites", help="Download all frames from all satellites with decoders")
     download_frames = subparsers.add_parser("download-frames",help="Download frames for specific satellite")
     download_frames.add_argument("--norad", required=True, type=int, help="NORAD ID of satellite")
-    subparsers.add_parser("decode-all-frames", help="Decode all frames")
-    decode_frame = subparsers.add_parser("decode-frame", help="Decode frames for specific satellite")
+    subparsers.add_parser("decode-frames-all-satellites", help="Decode all frames from all satellites with decoders")
+    decode_frame = subparsers.add_parser("decode-frames", help="Decode frames for specific satellite")
     decode_frame.add_argument("--norad", required=True, type=int, help="NORAD ID of satellite")
 
     args = parser.parse_args()
@@ -413,7 +415,7 @@ if __name__ == "__main__":
 
     elif args.mode == "run-all":
         handler.get_all_satellites()
-        norad_ids = list(handler.get_decodable_norad_ids())
+        norad_ids = handler.get_decodable_norad_ids()
         for i, norad_id in enumerate(norad_ids):
             print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
             handler.get_frames(norad_id)
@@ -432,9 +434,9 @@ if __name__ == "__main__":
         handler.get_satellite(args.norad)
         handler.remove_logger(h)
 
-    elif args.mode == "download-all-frames":
+    elif args.mode == "download-frames-all-satellites":
         print("Downloading frames for all satellites...")
-        norad_ids = list(handler.get_decodable_norad_ids())
+        norad_ids = handler.get_decodable_norad_ids()
         for i, norad_id in enumerate(norad_ids):
             print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
             handler.get_frames(norad_id)
@@ -446,15 +448,15 @@ if __name__ == "__main__":
         print(f"Downloading frames for satellite with NORAD ID {args.norad}...")
         handler.get_frames(args.norad)
 
-    elif args.mode == "decode-all-frames":
+    elif args.mode == "decode-frames-all-satellites":
         print("Decoding frames for all satellites...")
-        norad_ids = list(handler.get_decodable_norad_ids())
+        norad_ids = handler.get_decodable_norad_ids()
         for i, norad_id in enumerate(norad_ids):
             print(f"Processing satellite {i+1}/{len(norad_ids)}: NORAD ID {norad_id}")
             handler.decode_frames(norad_id)
 
 
-    elif args.mode == "decode-frame":
+    elif args.mode == "decode-frames":
         if not is_valid_NORAD_ID(args.norad):
             print(f"Invalid NORAD ID: {args.norad}")
             exit(1)
