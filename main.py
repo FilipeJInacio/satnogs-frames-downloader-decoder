@@ -235,7 +235,8 @@ class SatnogsAPIHandler:
         last_norad_id = state.get("last_norad_id", 0)
         if finished: # Are we in the middle of a download?
             # Means that we downloaded all satellite, redo the download again.
-            print("All satellite data has already been downloaded previously. Updating all information.")
+            print("All satellite data has already been downloaded previously. Nothing will be downloaded. If you want to download again, please delete the checkpoints/satellites.json file and run the program again.")
+            return
         else:
             print(f"Resuming from NORAD_ID {last_norad_id + 1}")
 
