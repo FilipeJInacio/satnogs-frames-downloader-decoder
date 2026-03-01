@@ -19,6 +19,8 @@ SATELLITE_FREQUENCY = 1/SATELLITE_RATE
 
 HIGHEST_NORAD_ID = 99999 # highest NORAD ID
 
+APP_SOURCE = "network"
+
 DATA_DIR = "data"
 LOGS_DIR = "logs"
 CHECKPOINTS_DIR = "checkpoints"
@@ -54,7 +56,7 @@ def build_request(cursor, start_time, end_time, norad_id):
     if cursor:
         return cursor, None # In the middle of downloading
 
-    params = {"satellite": norad_id, "format": "json", "end": start_time}
+    params = {"satellite": norad_id, "format": "json", "app_source": APP_SOURCE, "end": start_time}
 
     if end_time:
         params["start"] = end_time
@@ -321,7 +323,11 @@ class SatnogsAPIHandler:
             
             save_json(f"{CHECKPOINTS_DIR}/frames/{norad_id}.json", state)
 
-            if not next_cursor or next_cursor == cursor: # No more pages to download
+            if not next_cursor: # No more pages to download
+                break
+
+            if next_cursor == cursor: # Just in case the API returns the same cursor, to avoid infinite loop
+                self.logger.warning("Next cursor is the same as the current cursor. Stopping download to avoid infinite loop.")
                 break
 
             if self.stop_requested: # For Ctl + C handling
