@@ -321,7 +321,7 @@ class SatnogsAPIHandler:
             
             save_json(f"{CHECKPOINTS_DIR}/frames/{norad_id}.json", state)
 
-            if not next_cursor: # No more pages to download
+            if not next_cursor or next_cursor == cursor: # No more pages to download
                 break
 
             if self.stop_requested: # For Ctl + C handling
